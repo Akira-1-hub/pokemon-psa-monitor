@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Node
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# Database (公開サイトは静的JSONで動くため除外。fetch.pyで再生成可)
+data/market.db
+data/*.db-journal
+
+# Logs / temp
+backend_err.log
+*.log
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Env
+.env
+.env.local
+
+# Claude Code 個人設定（公開不要）
+.claude/
