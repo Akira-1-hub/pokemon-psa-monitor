@@ -5,7 +5,14 @@
  * 未設定または api        → /api/* を叩く（ローカル開発用）
  */
 
-const MODE = import.meta.env.VITE_DATA_MODE || 'api'
+// モード判定:
+//   1. 環境変数 VITE_DATA_MODE が最優先
+//   2. 未設定なら、localhost は 'api'（ローカル開発）、それ以外は 'static'（公開）
+const _envMode = import.meta.env.VITE_DATA_MODE
+const _isLocalhost =
+  typeof location !== 'undefined' &&
+  /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)
+const MODE = _envMode || (_isLocalhost ? 'api' : 'static')
 export const IS_STATIC = MODE === 'static'
 
 const API_BASE    = '/api'
