@@ -16,7 +16,8 @@ const MODE = _envMode || (_isLocalhost ? 'api' : 'static')
 export const IS_STATIC = MODE === 'static'
 
 const API_BASE    = '/api'
-const STATIC_BASE = '/data'
+// 静的JSONは Vite の base（GitHub Pagesのサブパス）配下に配置される
+const STATIC_BASE = (import.meta.env.BASE_URL || '/').replace(/\/$/, '') + '/data'
 
 // ─── キャッシュ（静的モードで全データを一度読み込む） ────────
 let _staticCache = {}
