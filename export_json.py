@@ -55,7 +55,8 @@ def build_products(conn) -> list[dict]:
 
     rows = cur.execute("""
         SELECT apparel_id, product_type, name, nickname,
-               img_url, snkrdunk_url, pokeca_url
+               img_url, snkrdunk_url, pokeca_url,
+               COALESCE(brand, 'pokeca') AS brand
         FROM snkr_products
     """).fetchall()
 
@@ -129,6 +130,7 @@ def build_products(conn) -> list[dict]:
         products.append({
             "apparel_id":   r["apparel_id"],
             "product_type": r["product_type"],
+            "brand":        r["brand"],
             "name":         r["name"],
             "nickname":     r["nickname"],
             "display_name": r["nickname"] or r["name"],
@@ -239,6 +241,7 @@ def build_rankings(products: list[dict]) -> dict:
                 "name":         p["display_name"],
                 "img_url":      p["img_url"],
                 "product_type": p["product_type"],
+                "brand":        p.get("brand", "pokeca"),
                 "series":       series_name,
                 "latest_price": s.get("latest_price"),
                 "latest_date":  s.get("latest_date"),
