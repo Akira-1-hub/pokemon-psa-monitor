@@ -149,9 +149,34 @@ export default function Charts({ products, selectedIds }) {
     return Array.from(set)
   }, [chartData])
 
+  // 選択中の商品（外部リンク表示用）
+  const selectedProducts = useMemo(
+    () => (products || []).filter(p => selectedIds.includes(p.apparel_id)),
+    [products, selectedIds],
+  )
+
   return (
     <div className="tab-content">
       <SectionHeader>📈 {opt.label}</SectionHeader>
+
+      {selectedProducts.length > 0 && (
+        <div className="chart-product-links">
+          {selectedProducts.map(p => (
+            <div className="cpl-item" key={p.apparel_id}>
+              {p.img_url && (
+                <img src={p.img_url} alt="" className="cpl-thumb" loading="lazy" />
+              )}
+              <span className="cpl-name">{p.display_name}</span>
+              <a className="cpl-link snkr" href={p.snkrdunk_url}
+                 target="_blank" rel="noopener noreferrer">snkrdunkで見る →</a>
+              {p.pokeca_url && (
+                <a className="cpl-link pokeca" href={p.pokeca_url}
+                   target="_blank" rel="noopener noreferrer">pokeca-chartで見る →</a>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="chart-controls">
         <select className="chart-select" value={chartIdx}

@@ -78,9 +78,9 @@ def build_products(conn) -> list[dict]:
 
         for sname, s in series_data.items():
             row = cur.execute("""
-                SELECT price FROM snkr_market_data
+                SELECT date, price FROM snkr_market_data
                 WHERE apparel_id = ? AND series = ?
-                  AND date < date(?, '-7 days')
+                  AND date < ?
                 ORDER BY date DESC LIMIT 1
             """, (apid, sname, s["latest_date"])).fetchone()
             if row:
@@ -89,6 +89,12 @@ def build_products(conn) -> list[dict]:
                 if latest is not None and prev:
                     s["change"]     = latest - prev
                     s["change_pct"] = (latest - prev) / prev * 100
+                    try:
+                        d1 = datetime.strptime(s["latest_date"], "%Y-%m-%d")
+                        d0 = datetime.strptime(row["date"], "%Y-%m-%d")
+                        s["change_days"] = (d1 - d0).days
+                    except Exception:
+                        s["change_days"] = None
 
         pokeca = {}
         if has_pokeca and r["product_type"] == "CARD":
@@ -238,6 +244,7 @@ def build_rankings(products: list[dict]) -> dict:
                 "latest_date":  s.get("latest_date"),
                 "change":       s.get("change"),
                 "change_pct":   s.get("change_pct"),
+                "change_days":  s.get("change_days"),
             })
 
     has_chg   = [i for i in items if i.get("change") is not None]

@@ -7,6 +7,7 @@ import math
 import os
 import sqlite3
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -91,12 +92,12 @@ def api_products():
                 "latest_date":  sr["date"],
             }
 
-        # 7日前価格との比較
+        # 直近1つ前の取引との比較（前回比）+ 実日数
         for sname, s in series_data.items():
             row = cur.execute("""
-                SELECT price FROM snkr_market_data
+                SELECT date, price FROM snkr_market_data
                 WHERE apparel_id = ? AND series = ?
-                  AND date < date(?, '-7 days')
+                  AND date < ?
                 ORDER BY date DESC LIMIT 1
             """, (apid, sname, s["latest_date"])).fetchone()
             if row:
@@ -105,6 +106,12 @@ def api_products():
                 if latest is not None and prev:
                     s["change"]     = latest - prev
                     s["change_pct"] = (latest - prev) / prev * 100
+                    try:
+                        d1 = datetime.strptime(s["latest_date"], "%Y-%m-%d")
+                        d0 = datetime.strptime(row["date"], "%Y-%m-%d")
+                        s["change_days"] = (d1 - d0).days
+                    except Exception:
+                        s["change_days"] = None
 
         # --- pokeca PSA統計（CARD のみ） ---
         pokeca: dict = {}
@@ -499,6 +506,7 @@ def api_rankings():
                 "latest_date":  s.get("latest_date"),
                 "change":       s.get("change"),
                 "change_pct":   s.get("change_pct"),
+                "change_days":  s.get("change_days"),
             })
 
     has_chg   = [i for i in items if i.get("change") is not None]

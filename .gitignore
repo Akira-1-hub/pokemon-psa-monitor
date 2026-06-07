@@ -13,6 +13,8 @@ frontend/dist/
 # Database (公開サイトは静的JSONで動くため除外。fetch.pyで再生成可)
 data/market.db
 data/*.db-journal
+data/*.db-wal
+data/*.db-shm
 
 # Logs / temp
 backend_err.log

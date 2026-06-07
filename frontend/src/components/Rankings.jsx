@@ -100,7 +100,7 @@ function PriceTable({ rows, showChange = true }) {
           <tr>
             <th>順位</th><th>画像</th><th>商品</th><th>ブランド</th><th>タイプ</th><th>シリーズ</th>
             <th>直近価格</th>
-            {showChange && (<><th>変動(7日)</th><th>騰落率</th></>)}
+            {showChange && (<><th>変動(前回比)</th><th>騰落率</th><th>比較間隔</th></>)}
             <th>取得日</th>
           </tr>
         </thead>
@@ -123,6 +123,9 @@ function PriceTable({ rows, showChange = true }) {
                 {showChange && (<>
                   <td className={`td-num ${c}`}>{fmt.change(r.change)}</td>
                   <td className={`td-num ${c}`}>{fmt.pct(r.change_pct)}</td>
+                  <td className="td-num" style={{ color: '#6a7a94' }}>
+                    {r.change_days != null ? `${r.change_days}日` : '---'}
+                  </td>
                 </>)}
                 <td>{r.latest_date}</td>
               </tr>
@@ -281,10 +284,10 @@ export default function Rankings() {
         )}
       </div>
 
-      <SectionHeader>📈 高騰ランキング（snkrdunk・7日比）</SectionHeader>
+      <SectionHeader>📈 高騰ランキング（snkrdunk・前回取引比）</SectionHeader>
       <PriceTable rows={f(d.rising)} />
 
-      <SectionHeader>📉 下落ランキング（snkrdunk・7日比）</SectionHeader>
+      <SectionHeader>📉 下落ランキング（snkrdunk・前回取引比）</SectionHeader>
       <PriceTable rows={f(d.falling)} />
 
       <SectionHeader>💰 価格ランキング（直近価格）</SectionHeader>

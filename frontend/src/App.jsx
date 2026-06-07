@@ -38,8 +38,16 @@ export default function App() {
   const [selectedIds,  setSelectedIds]  = useState([])
   const [loading,      setLoading]      = useState(true)
   const [error,        setError]        = useState(null)
-  const [sidebarOpen,  setSidebarOpen]  = useState(true)
+  const [sidebarOpen,  setSidebarOpen]  = useState(
+    () => (typeof window !== 'undefined' ? window.innerWidth > 768 : true)
+  )
   const [addModalOpen, setAddModalOpen] = useState(false)
+
+  // 人気カードクリック → そのカードだけ選択してチャートタブへ
+  function handleOpenChart(apparelId) {
+    setSelectedIds([apparelId])
+    setActiveTab('charts')
+  }
 
   function reload() {
     fetchProducts()
@@ -92,6 +100,10 @@ export default function App() {
             onProductDeleted={reload}
           />
         )}
+        {/* スマホ：サイドバー展開中の背景（タップで閉じる） */}
+        {sidebarOpen && (
+          <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />
+        )}
 
         <main className="main-content">
           <div className="tab-bar">
@@ -128,7 +140,7 @@ export default function App() {
           {!loading && !error && (
             <>
               {activeTab === 'overview' && (
-                <Overview products={products} />
+                <Overview products={products} onOpenChart={handleOpenChart} />
               )}
               {activeTab === 'charts' && (
                 <Charts products={products} selectedIds={selectedIds} />

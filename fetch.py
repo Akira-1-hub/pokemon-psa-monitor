@@ -19,6 +19,7 @@ import re
 import sqlite3
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -27,9 +28,12 @@ import requests
 # ─── 設定 ─────────────────────────────────────────────────────────
 DB_PATH       = Path("data/market.db")
 PRODUCTS_CSV  = Path("products.csv")
-REQUEST_DELAY = 3
 TIMEOUT       = 20
 JST           = timezone(timedelta(hours=9))
+
+# 高速化パラメータ
+MAX_WORKERS   = 8     # 並列取得数（多すぎるとサーバーにブロックされる）
+API_SLEEP     = 0.08  # 同一商品内のAPI呼び出し間の待機（秒）
 
 SNKR_HEADERS = {
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -51,6 +55,9 @@ POKECA_HEADERS = {
 
 BOX_TARGET_SERIES   = ["1個"]
 CARD_TARGET_SERIES  = ["PSA10", "A"]
+# CARD の状態別 optionId は全カード共通（調査済み）。
+# これを使えば options 一覧取得（API 1回）を省略できる。
+CARD_SERIES_OPTID   = {"PSA10": 22, "A": 18}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -64,6 +71,10 @@ log = logging.getLogger(__name__)
 def init_db() -> None:
     DB_PATH.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
+
+    # 並列書き込みを安全にするため WAL モード
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS snkr_products (
@@ -127,28 +138,15 @@ def init_db() -> None:
 #  snkrdunk
 # ═════════════════════════════════════════════════════════════════════
 def snkr_fetch_product_info(apparel_id: int) -> dict:
+    # 商品名・画像のみ取得（brand は CSV の値を使うため API 呼び出しを省略）
     url = f"https://snkrdunk.com/v2/products/{apparel_id}?type=apparel"
     r = requests.get(url, headers=SNKR_HEADERS, timeout=TIMEOUT)
     r.raise_for_status()
     d = r.json()
     img = d.get("eyeCatchImageUrl") or (d.get("imageUrls") or [None])[0]
-
-    # brand 自動検出: productNumber が "pkmn-tcg-*" ならポケカ、それ以外はワンピ
-    brand = None
-    try:
-        rr = requests.get(f"https://snkrdunk.com/v1/apparels/{apparel_id}",
-                          headers=SNKR_HEADERS, timeout=8)
-        if rr.status_code == 200:
-            pn = (rr.json().get("productNumber") or "").lower()
-            if pn:
-                brand = "pokeca" if "pkmn" in pn else "onepiece"
-    except Exception:
-        pass
-
     return {
         "name":    d.get("nameJP") or d.get("namePrimary") or f"apparel_{apparel_id}",
         "img_url": img,
-        "brand":   brand,
     }
 
 
@@ -168,14 +166,23 @@ def snkr_fetch_chart_options(apparel_id: int, used: bool = False) -> list[dict]:
 
 
 def snkr_fetch_chart(apparel_id: int, option_id: int,
-                     used: bool = False) -> list[tuple[int, float]]:
-    """価格データを取得"""
+                     used: bool = False,
+                     range_key: str = "all") -> list[tuple[int, float]]:
+    """価格データを取得（range_key: all / oneWeek / oneMonth）"""
     path = "sales-chart/used" if used else "sales-chart"
     url = (f"https://snkrdunk.com/v1/apparels/{apparel_id}/{path}"
-           f"?range=all&salesChartOptionId={option_id}")
+           f"?range={range_key}&salesChartOptionId={option_id}")
     r = requests.get(url, headers=SNKR_HEADERS, timeout=TIMEOUT)
     r.raise_for_status()
     return r.json().get("points") or []
+
+
+def _has_snkr_data(conn, apparel_id: int) -> bool:
+    """この商品の価格データが既にDBにあるか"""
+    return conn.execute(
+        "SELECT 1 FROM snkr_market_data WHERE apparel_id=? LIMIT 1",
+        (apparel_id,),
+    ).fetchone() is not None
 
 
 def snkr_fetch_sales_history(apparel_id: int, max_pages: int = 200) -> list[dict]:
@@ -384,19 +391,21 @@ def load_products() -> list[dict]:
 # ═════════════════════════════════════════════════════════════════════
 def process_snkrdunk(conn, apparel_id: int, product_type: str,
                      nickname: str, pokeca_url: str | None,
-                     brand: str = "pokeca") -> None:
+                     brand: str = "pokeca", full: bool = False) -> None:
     info = snkr_fetch_product_info(apparel_id)
-    # 自動検出された brand が CSV と異なる場合は自動検出を優先
-    detected = info.get("brand")
-    final_brand = detected or brand or "pokeca"
-    log.info("  [snkrdunk] %s [brand=%s]", info["name"], final_brand)
+    final_brand = (brand or "pokeca")     # brand は CSV を信頼
+
+    # 既存データがあれば直近1週間だけ（差分更新で高速）、無ければ全期間
+    range_key = "all" if (full or not _has_snkr_data(conn, apparel_id)) else "oneWeek"
+    log.info("  [snkrdunk] %s [brand=%s, range=%s]",
+             info["name"], final_brand, range_key)
 
     _upsert_product(conn, apparel_id, product_type, info["name"],
                     nickname, info["img_url"], pokeca_url, final_brand)
 
     if product_type == "BOX":
-        # BOX: /sales-chart からサイズ別(1個)を取得
-        time.sleep(1)
+        # BOX: optionId が商品ごとに異なるため options 取得が必要
+        time.sleep(API_SLEEP)
         options = snkr_fetch_chart_options(apparel_id, used=False)
         option_map = _resolve_option_ids(options, BOX_TARGET_SERIES)
         if not option_map:
@@ -404,25 +413,19 @@ def process_snkrdunk(conn, apparel_id: int, product_type: str,
                         BOX_TARGET_SERIES)
             return
         for series_name, opt_id in option_map.items():
-            time.sleep(1)
-            points = snkr_fetch_chart(apparel_id, opt_id, used=False)
+            time.sleep(API_SLEEP)
+            points = snkr_fetch_chart(apparel_id, opt_id, used=False, range_key=range_key)
             n = _save_snkr_series(conn, apparel_id, series_name, points)
             log.info("  [snkrdunk %s] optId=%d → %d 件", series_name, opt_id, n)
 
     else:
-        # CARD: /sales-chart/used から状態別(PSA10, A)を取得
-        time.sleep(1)
-        options = snkr_fetch_chart_options(apparel_id, used=True)
-        option_map = _resolve_option_ids(options, CARD_TARGET_SERIES)
-        if not option_map:
-            log.warning("  [snkrdunk] CARD: 対象シリーズが見つかりません %s "
-                        "(取れたオプション: %s)",
-                        CARD_TARGET_SERIES,
-                        [o.get("localizedName") for o in options])
-            return
-        for series_name, opt_id in option_map.items():
-            time.sleep(1)
-            points = snkr_fetch_chart(apparel_id, opt_id, used=True)
+        # CARD: 状態別 optionId は全カード共通(PSA10=22, A=18)。直接取得。
+        for series_name in CARD_TARGET_SERIES:
+            opt_id = CARD_SERIES_OPTID.get(series_name)
+            if opt_id is None:
+                continue
+            time.sleep(API_SLEEP)
+            points = snkr_fetch_chart(apparel_id, opt_id, used=True, range_key=range_key)
             n = _save_snkr_series(conn, apparel_id, series_name, points)
             log.info("  [snkrdunk %s] optId=%d → %d 件", series_name, opt_id, n)
 
@@ -439,9 +442,9 @@ def process_pokeca(conn, apparel_id: int, pokeca_url: str) -> None:
         return
     log.info("  [pokeca] item_id=%s", item_id)
 
-    time.sleep(1)
+    time.sleep(API_SLEEP)
     grd_history = pokeca_fetch_grd_history(item_id)
-    time.sleep(1)
+    time.sleep(API_SLEEP)
     tx_history  = pokeca_fetch_tx_history(item_id)
 
     n = _save_pokeca_stats(conn, apparel_id, grd_history, tx_history)
@@ -457,6 +460,8 @@ def main() -> None:
     parser.add_argument("--apparel", type=int, help="特定の apparel_id のみ")
     parser.add_argument("--skip-snkrdunk", action="store_true")
     parser.add_argument("--skip-pokeca",   action="store_true")
+    parser.add_argument("--full", action="store_true",
+                        help="全期間を再取得（既存データも全て取り直す。通常は直近のみ）")
     args = parser.parse_args()
 
     init_db()
@@ -468,46 +473,67 @@ def main() -> None:
             log.error("指定 apparel_id がありません: %s", args.apparel)
             return
 
-    log.info("=== 取得開始: %d 件 ===", len(products))
+    workers = 1 if args.apparel else MAX_WORKERS
+    log.info("=== 取得開始: %d 件 / 並列数: %d ===", len(products), workers)
 
-    for i, prod in enumerate(products):
-        apparel_id   = int(prod["apparel_id"])
-        product_type = (prod.get("type") or "").strip().upper()
-        nickname     = (prod.get("nickname") or "").strip()
-        pokeca_url   = (prod.get("pokeca_url") or "").strip()
-        brand        = (prod.get("brand") or "pokeca").strip().lower()
-
-        log.info("[%d/%d] apparel_id=%d type=%s brand=%s",
-                 i + 1, len(products), apparel_id, product_type, brand)
-
-        conn = sqlite3.connect(DB_PATH)
-        try:
-            if not args.skip_snkrdunk:
+    if workers == 1:
+        # 単一商品（テスト用）は逐次
+        for prod in products:
+            _process_one(prod, args)
+    else:
+        # 並列取得
+        done = 0
+        total = len(products)
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futures = {ex.submit(_process_one, p, args): p for p in products}
+            for fut in as_completed(futures):
+                done += 1
+                p = futures[fut]
+                apid = p.get("apparel_id")
                 try:
-                    process_snkrdunk(conn, apparel_id, product_type,
-                                     nickname, pokeca_url or None, brand)
-                except requests.RequestException as e:
-                    log.error("  snkrdunk 通信エラー: %s", e)
+                    fut.result()
+                    log.info("[%d/%d] 完了 apparel_id=%s", done, total, apid)
                 except Exception as e:
-                    log.exception("  snkrdunk エラー: %s", e)
-
-            if not args.skip_pokeca and pokeca_url and product_type == "CARD":
-                try:
-                    process_pokeca(conn, apparel_id, pokeca_url)
-                except requests.RequestException as e:
-                    log.error("  pokeca 通信エラー: %s", e)
-                except Exception as e:
-                    log.exception("  pokeca エラー: %s", e)
-
-            conn.commit()
-        finally:
-            conn.close()
-
-        if i < len(products) - 1:
-            log.info("  %d 秒待機...", REQUEST_DELAY)
-            time.sleep(REQUEST_DELAY)
+                    log.error("[%d/%d] 失敗 apparel_id=%s: %s", done, total, apid, e)
 
     log.info("=== 完了 ===")
+
+
+def _process_one(prod: dict, args) -> None:
+    """1商品の snkrdunk + pokeca 取得（並列ワーカー単位）"""
+    apparel_id   = int(prod["apparel_id"])
+    product_type = (prod.get("type") or "").strip().upper()
+    nickname     = (prod.get("nickname") or "").strip()
+    pokeca_url   = (prod.get("pokeca_url") or "").strip()
+    brand        = (prod.get("brand") or "pokeca").strip().lower()
+
+    log.info("[start] apparel_id=%d type=%s brand=%s",
+             apparel_id, product_type, brand)
+
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        conn.execute("PRAGMA busy_timeout=30000")
+        if not args.skip_snkrdunk:
+            try:
+                process_snkrdunk(conn, apparel_id, product_type,
+                                 nickname, pokeca_url or None, brand,
+                                 full=args.full)
+            except requests.RequestException as e:
+                log.error("  snkrdunk 通信エラー(%d): %s", apparel_id, e)
+            except Exception as e:
+                log.exception("  snkrdunk エラー(%d): %s", apparel_id, e)
+
+        if not args.skip_pokeca and pokeca_url and product_type == "CARD":
+            try:
+                process_pokeca(conn, apparel_id, pokeca_url)
+            except requests.RequestException as e:
+                log.error("  pokeca 通信エラー(%d): %s", apparel_id, e)
+            except Exception as e:
+                log.exception("  pokeca エラー(%d): %s", apparel_id, e)
+
+        conn.commit()
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
